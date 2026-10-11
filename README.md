@@ -3,7 +3,19 @@
 `fw-setup.sh` prepares a router running OpenWrt 25.12 as a security platform. It installs VPN and policy-routing packages, moves package storage onto a USB 3.0 drive, and installs ClamAV, Snort 3, mitmproxy and nDPI builds for the router's CPU architecture.
 
 > [!WARNING]
-> The script **erases the USB drive** you plug in, and it installs unsigned packages with `apk add --allow-untrusted`. Read this guide before running it.
+> A fresh installation **erases the selected USB drive**. Resuming an existing USB/extroot installation preserves its layout. The script installs unsigned packages with `apk add --allow-untrusted`. Read this guide before running it.
+
+## Working options for v3.3.5
+
+Use these options together when installing or resuming with the included mitmproxy compatibility bundle:
+
+```sh
+-upgrade -with-mitmproxy -mitmproxy-compat -noreboot
+```
+
+`-upgrade` enables package upgrades, `-with-mitmproxy` includes mitmproxy, `-mitmproxy-compat` selects its embedded prebuilt dependencies and compatibility launchers, and `-noreboot` keeps the router running after successful stage 2. These settings are saved for the automatic stage 2 run and later resumes. The first reboot is still needed to activate extroot on a fresh setup.
+
+Version 3.3.5 was confirmed working on the GL.iNet GL-MT3000 (Beryl AX). This guide describes that version. Compatibility mode is opt-in: including mitmproxy does **not** automatically enable `-mitmproxy-compat`.
 
 ## How it works
 
@@ -11,8 +23,8 @@ OpenWrt only switches package storage to a USB drive (called *extroot*) while bo
 
 | Stage | Steps | What happens |
 |---|---|---|
-| 1 | 1 – 5 | Updates the package lists, upgrades installed packages (optional), installs the base packages, partitions and formats the USB drive, copies the router's current settings and packages to it, and activates extroot. Then the router reboots. |
-| 2 | 6 – 10 | Starts about a minute after boot. Installs tcpdump, dnstop and nginx, downloads the custom packages for your router to `/usb/tmp`, installs them, checks that the main tools run, and reboots. |
+| 1 | 1 – 5 | Updates the package lists, upgrades installed packages by default (skip with `-noupgrade`), installs the base packages, partitions and formats the USB drive, copies the router's current settings and packages to it, and activates extroot. Then the router reboots. |
+| 2 | 6 – 10 | Starts about a minute after boot. Installs tcpdump, dnstop and nginx, downloads the custom packages for your router to `/usb/tmp`, installs them, checks that the main tools run and that the selected mitmproxy compatibility mode forwards HTTP/HTTPS, and reboots unless `-noreboot` was selected. |
 
 Extroot is only activated after the copy on the USB drive has been verified. Stage 2 only reboots when every step succeeded; otherwise it stops and leaves a log explaining what failed.
 
@@ -27,9 +39,11 @@ The script reads the router's architecture and stops if it does not match the `-
 
 ## Requirements
 
-You need a router from the table above running OpenWrt 25.12 (any 25.12.x release; the script stops on other versions). A freshly flashed router is best. The router needs working internet on its WAN port, a root password, and SSH access from your computer.
+You need a router from the table above running OpenWrt 25.12 (any 25.12.x release; the script stops on other versions). For a fresh installation, start with a freshly flashed router. To repair or continue an existing USB/extroot installation, use the resume commands below. The router needs working internet on its WAN port, a root password, and SSH access from your computer.
 
-You also need a USB 3.0 flash drive or SSD, plugged into the router's USB 3.0 port. Everything on it will be erased. The script warns if the drive is not running at USB 3.0 speed.
+You also need a USB 3.0 flash drive or SSD, plugged into the router's USB 3.0 port. A fresh setup erases the selected drive. Resuming an existing extroot installation does not repartition or format it. The script warns if the drive is not running at USB 3.0 speed.
+
+The embedded mitmproxy compatibility bundles require musl Python 3.13 on the matching ARM64 or ARMv7 target. The script checks the Python/CPU match before installing them. All dependencies are prebuilt; no GCC, Rust compiler, source builds or automatic PyPI downloads run on the router.
 
 ## USB drive layout
 
@@ -57,17 +71,13 @@ Plug the drive into the router's USB 3.0 port. Copy off anything you want to kee
 
 ### Step 3: Copy the script to the router
 
-Download it directly on the router:
+Use the v3.3.5 script. Copy it from your computer and name the router copy `fw-setup.sh`, as used in the examples below. The `-O` option uses the legacy SCP copy mode supported by OpenWrt's SSH server:
 
 ```sh
-wget -O /root/fw-setup.sh https://raw.githubusercontent.com/infinity-avenir/<repo>/main/fw-setup.sh
+scp -O fw-setup-3-3-5.sh root@192.168.1.1:/root/fw-setup.sh
 ```
 
-Or copy it from your computer. The `-O` option is needed because OpenWrt's SSH server does not support the newer SFTP-based copy mode:
-
-```sh
-scp -O fw-setup.sh root@192.168.1.1:/root/
-```
+If you keep the versioned filename on the router, substitute that filename in the commands. For example, `sh /tmp/tmp/fw-setup-3-3-5.sh ...` runs the same installer. On resume, run the newly copied file once to update the saved installer at `/etc/fw-setup/fw-setup.sh`.
 
 ### Step 4: Check the router and drive
 
@@ -82,10 +92,16 @@ The help screen ends with the router's model, its architecture and the matching 
 Pick the `-usb` and `-target` values for your hardware, for example:
 
 ```sh
-sh /root/fw-setup.sh -usb 64g -target glinet -noupgrade
+sh /root/fw-setup.sh -usb 64g -target glinet -upgrade -with-mitmproxy -mitmproxy-compat -noreboot
 ```
 
-`-noupgrade` skips the bulk `apk upgrade` (step 2), which OpenWrt advises against; leave it out if you want that step.
+For a Linksys WRT router with a 32 GB drive:
+
+```sh
+sh /root/fw-setup.sh -usb 32g -target linksyswrt -upgrade -with-mitmproxy -mitmproxy-compat -noreboot
+```
+
+Choose the actual drive size and matching target. Package upgrades are enabled by default; explicit `-upgrade` also overrides a saved `-noupgrade` setting when resuming. Use `-noupgrade` only when you deliberately want to skip package upgrades.
 
 When the script reaches step 4 it shows the drive it found and asks you to type `YES` before erasing it. After step 5 it reboots the router within 10 seconds and your SSH session closes.
 
@@ -97,17 +113,43 @@ Wait a minute or two, log in again, and follow the log:
 tail -f /usb/fw-setup.log
 ```
 
-Stage 2 first waits (up to five minutes) for internet access and a synced clock, then installs everything. The mitmproxy install can take a while because it also installs Python modules. When the log says **All steps finished and verified**, the router reboots one last time and the setup is complete.
+Stage 2 first waits (up to five minutes) for internet access and a synced clock, then installs everything. The mitmproxy install can take a while because it also installs prebuilt Python modules. Version 3.3.5 allows up to three minutes for the local mitmweb test to start and prints progress every 15 seconds while waiting.
+
+With `-noreboot`, successful setup ends with **Setup complete. Reboot skipped (-noreboot); reboot manually when ready.** Without that option, stage 2 reboots after all required checks pass. A failed check stops completion and prevents the final reboot.
+
+### Resume an existing installation
+
+Use these commands after copying the latest script to `/root/fw-setup.sh`. They keep the existing USB/extroot layout and run stage 2 without formatting the drive.
+
+GL.iNet (including GL-MT3000 Beryl AX):
+
+```sh
+sh /root/fw-setup.sh -resume -target glinet -upgrade -with-mitmproxy -mitmproxy-compat -noreboot
+```
+
+Linksys WRT:
+
+```sh
+sh /root/fw-setup.sh -resume -target linksyswrt -upgrade -with-mitmproxy -mitmproxy-compat -noreboot
+```
+
+After that first run updates the saved installer, subsequent retries can use `/etc/fw-setup/fw-setup.sh` with the same options. Explicit options override the corresponding saved settings.
 
 ## Command-line options
 
 | Option | Meaning |
 |---|---|
 | `-usb 32g` or `-usb 64g` | Drive size class; sets the swap size (2 GB or 4 GB). Required for a first run. |
-| `-target linksyswrt` or `-target glinet` | Router family; selects which custom packages to download. Required. |
+| `-target linksyswrt` or `-target glinet` | Router family; selects which custom packages to download. Required for a fresh setup; resume can use the saved target. |
 | `-dev /dev/sdX` | Use this USB drive instead of detecting it automatically (needed if more than one USB drive is plugged in). Only USB drives are accepted. |
 | `-force` | Erase the USB drive without asking for `YES`, for unattended runs. |
-| `-noupgrade` | Skip step 2 (`apk upgrade`). Recommended. |
+| `-upgrade` | Enable `apk upgrade` (the default), including when resuming. Overrides an older saved `-noupgrade`. Uses `-y` if supported by the installed apk; otherwise uses its supported non-interactive behavior. Upgrades packages, not the router firmware. |
+| `-noupgrade` | Explicitly skip package upgrades. |
+| `-with-mitmproxy` | Include mitmproxy; also overrides a previous `-skip-mitmproxy`. Mitmproxy is included by default, but compatibility mode needs its own option. |
+| `-mitmproxy-compat` | Use the embedded prebuilt dependencies, reviewed Python replacements and private launchers. Supports regular HTTP/HTTPS proxy mode on the matching ARM64/ARMv7 musl Python 3.13 target. Saved across reboot/resume. |
+| `-skip-mitmproxy` | Install ClamAV, Snort 3 and nDPI without mitmproxy. Saved across reboot/resume. |
+| `-noreboot` | Skip only the final reboot after successful stage 2. The first reboot for fresh extroot activation still occurs. Saved across reboot/resume. |
+| `-manual-reboot` | Pause at the end of stage 1 so you can manually reboot to activate extroot and start stage 2. |
 | `-resume` | Run stage 2 by hand, for example after fixing an error. |
 | `-h` | Show help, router details and detected USB drives. |
 
@@ -117,7 +159,7 @@ Running the script again on a router that already uses the USB drive for package
 
 **Step 3, on the router's internal flash:** `openvpn-openssl`, `luci-app-openvpn`, `wireguard-tools`, `kmod-wireguard`, `luci-proto-wireguard`, `pbr`, `luci-app-pbr`, `dnsmasq-full` (replaces `dnsmasq`), `block-mount`, `swap-utils`, `usbutils`, `kmod-usb-core`, `kmod-usb2`, `kmod-usb3`, `kmod-usb-storage`, `kmod-usb-storage-uas`, `kmod-fs-ext4`, `kmod-fs-vfat`, `fdisk`, `gdisk`, `parted`, `e2fsprogs`, `curl` and `coreutils`. If any of these fail, the script stops before touching the USB drive.
 
-**Step 6, on the USB drive:** `tcpdump`, `dnstop`, `nginx-full`, `nginx-mod-naxsi`, `nginx-mod-luci` and `luci-nginx`. The script then moves the LuCI web interface from uhttpd to nginx, but only if nginx actually serves the LuCI page; otherwise LuCI stays on uhttpd. uhttpd is disabled, not removed.
+**Step 6, on the USB drive:** `tcpdump`, `dnstop`, `nginx-full`, `nginx-mod-naxsi`, `nginx-mod-luci` and `luci-nginx`. LuCI stays on uhttpd at ports 80/443. nginx runs alongside it on ports 8088/8443, leaving ports 8080/8081 free for mitmproxy.
 
 **Steps 8 and 9, custom packages on the USB drive:**
 
@@ -130,7 +172,11 @@ Running the script again on a router that already uses the USB drive for package
 
 Each router family gets the builds for its own architecture. The files are saved in `/usb/tmp`. The LuCI apps are installed separately from the tools, so a problem with a LuCI package cannot block the tool itself. If the router already has one of the general-purpose libraries bundled with Snort (`liblzma`, `libtirpc`, `luajit2`, `libpciaccess`, `libhwloc`, `libnetfilter-queue1`), the installed version is kept instead of being replaced by the bundled one.
 
-After installing, the script runs `clamscan --version`, `freshclam --version`, `snort -V`, `mitmdump --version` and `mitmweb --version` to confirm the tools actually start.
+After installing, the script runs `clamscan --version`, `freshclam --version`, `snort -V`, `mitmdump --version` and `mitmweb --version` to confirm the tools actually start. The ClamAV LuCI package is r15 and the Snort LuCI package is r2.
+
+With `-mitmproxy-compat`, it also tests HTTP forwarding, HTTPS interception with certificate verification, and the mitmweb interface using temporary loopback ports. On Linksys, it additionally tests compressed responses and Argon2 authentication. These tests do not enable a permanent proxy service or configure traffic interception.
+
+Compatibility mode supports **regular HTTP/HTTPS proxying only**. HTTP/3, UDP proxying, WireGuard, TUN and local redirect modes within mitmproxy are unavailable. This restriction does not remove the separately installed WireGuard VPN tools. The embedded `mitmproxy_rs` Python replacement is a restricted compatibility implementation, not the native Rust extension.
 
 ## Checking the result
 
@@ -153,20 +199,24 @@ mitmdump --version
 | `/etc/fw-setup/` | Copy of the script and its saved settings, used by stage 2 |
 | `/etc/init.d/fw-setup` | Temporary boot hook that starts stage 2; removed when stage 2 ends |
 | `/usb/tmp/` | Downloaded custom packages |
+| `/etc/fw-setup/mitmproxy-compat-3-3/runtime-check.log` | Preserved mitmweb test process log on GL.iNet |
+| `/etc/fw-setup/mitmproxy-compat-armv7-3-3-3/runtime-check.log` | Preserved mitmweb test process log on Linksys |
 
 ## Troubleshooting
 
 **Stage 2 stopped with errors.** The end of `/usb/fw-setup.log` lists every error. The router does not reboot, and the boot hook is removed so stage 2 does not repeat at every boot. Fix the cause (for example a missing or broken package in one of the repositories), then run:
 
 ```sh
-sh /etc/fw-setup/fw-setup.sh -resume
+sh /etc/fw-setup/fw-setup.sh -resume -upgrade -with-mitmproxy -mitmproxy-compat -noreboot
 ```
+
+This uses the saved router target. Add `-target glinet` or `-target linksyswrt` if you need to specify it explicitly.
 
 **Stage 2 never started, or `df -h /overlay` does not show the USB drive.** The drive was not mounted as extroot, so the router booted from internal flash. Stage 2 refuses to run in that case, so nothing is installed onto the small internal flash. Check `block info` and `logread | grep -i -e block -e extroot`, reseat the drive, and reboot; stage 2 tries again at each boot until it succeeds.
 
 **No internet during stage 2.** Stage 2 waits up to five minutes for internet access and a synced clock, then stops. Fix the WAN connection and reboot, or run the `-resume` command above.
 
-**LuCI is not reachable after setup.** If the switch to nginx had failed, the script would have restored uhttpd. To go back to uhttpd by hand:
+**LuCI is not reachable after setup.** Version 3.3.5 keeps LuCI on uhttpd at ports 80/443. Check `logread -e uhttpd`. To stop nginx and restart uhttpd by hand:
 
 ```sh
 /etc/init.d/nginx stop; /etc/init.d/nginx disable
@@ -175,7 +225,25 @@ sh /etc/fw-setup/fw-setup.sh -resume
 
 **A LuCI app fails to install.** Check its APK metadata: the architecture should be `noarch` and the version should use apk's format, such as `1.0.0-r1`. The tool itself still installs.
 
-**mitmproxy installs but fails its check.** mitmproxy installs extra Python modules during setup, and some of them contain compiled code that may not be available for the router's architecture, especially 32-bit ARM. The log shows the error from `mitmdump --version`.
+**`ModuleNotFoundError: No module named 'mitmproxy_rs'`.** Confirm that compatibility mode was selected:
+
+```sh
+grep '^MITMPROXY_COMPAT=' /etc/fw-setup/state | tail -1
+```
+
+`MITMPROXY_COMPAT='0'` means the embedded bundle was not selected. Resume with `-with-mitmproxy -mitmproxy-compat`, as shown above. `-with-mitmproxy` alone includes the application but does not select its embedded compatibility dependencies. A value of `1` is expected for compatibility mode; if the error persists, inspect step 9 for an installation or launcher failure.
+
+**mitmproxy versions pass but the local test times out.** Version 3.3.5 waits up to 180 seconds for mitmweb to open its local test ports and preserves its process log. A process that exits early or never becomes ready still fails. Inspect the log for your target:
+
+```sh
+# GL.iNet
+cat /etc/fw-setup/mitmproxy-compat-3-3/runtime-check.log
+
+# Linksys WRT
+cat /etc/fw-setup/mitmproxy-compat-armv7-3-3-3/runtime-check.log
+```
+
+The complete forwarding test has a 420-second outer timeout where the `timeout` utility is available. Certificate verification remains enabled, and the script does not report success or perform the final reboot when a required runtime check fails.
 
 ## Going back to internal flash
 
@@ -197,6 +265,6 @@ rm -rf /etc/fw-setup /etc/init.d/fw-setup /etc/rc.d/S99fw-setup
 
 **ClamAV virus database.** By default ClamAV keeps its database under `/var`, which is in RAM. Point its database directory to a folder under `/usb` (for example `/usb/clamav`) before running `freshclam`.
 
-**Package upgrades.** OpenWrt advises against bulk `apk upgrade`; use firmware upgrades instead. Avoid `apk upgrade --available` in particular: it removes the pins that keep the custom package versions installed and may replace them with the versions from OpenWrt's feeds.
+**Package upgrades.** Version 3.3.5 enables `apk upgrade` by default. The examples include `-upgrade` explicitly so a saved `-noupgrade` does not suppress it. Use `-noupgrade` to opt out. This upgrades installed packages; it does not perform a firmware sysupgrade. The script does not use `apk upgrade --available`.
 
 **Configuration is not included.** The script installs the tools but does not configure them. VPN tunnels and policy-based routing rules, Snort rules and traffic handling, the mitmproxy setup, NAXSI rules and the ClamAV database location all need to be set up separately.
